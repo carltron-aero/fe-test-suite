@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WRO FE Reliability Test Suite</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Unofficial WRO Future Engineers testing suite</p>
+        <h1>Reliability Test Suite</h1>
+        <p class="brand-line">Made by Caltron</p>
+      </div>
+      <div class="header-actions">
+        <a class="button ghost" href="analytics.html">Analytics</a>
+        <button id="undoBtn" class="button ghost" type="button">Undo</button>
+        <button id="exportBtn" class="button ghost" type="button">Export</button>
+        <label class="button ghost file-button">
+          Import
+          <input id="importInput" type="file" accept="application/json">
+        </label>
+        <button id="resetBtn" class="button danger" type="button">Reset</button>
+      </div>
+    </header>
+
+    <a id="analyticsBanner" class="analytics-banner" href="analytics.html">
+      <div>
+        <p class="eyebrow">Analytics</p>
+        <strong id="recommendationCount">0 recommendations</strong>
+      </div>
+      <span id="recommendationSummary">Record a few runs to unlock improvement signals.</span>
+    </a>
+
+    <main class="app-shell">
+      <section class="panel planner-panel" aria-label="Current setup">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Current setup</p>
+            <h2 id="layoutTitle">No setup selected</h2>
+          </div>
+        <div class="setup-actions">
+            <button id="nextBtn" class="button" type="button">Skip setup</button>
+            <button id="completeBtn" class="button primary" type="button">Complete setup</button>
+        </div>
+        </div>
+
+        <div class="setup-grid">
+          <div class="field-wrap">
+            <div id="field" class="field" aria-label="Field layout"></div>
+          </div>
+
+          <div class="setup-side">
+            <div id="layoutMeta" class="metric-grid"></div>
+            <div>
+              <h3 id="changeTitle">Obstacle changes</h3>
+              <div id="changeList" class="change-list"></div>
+            </div>
+            <div>
+              <h3>Run list</h3>
+              <div id="runList" class="run-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-stack">
+        <section class="panel" aria-label="Coverage">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Progress</p>
+              <h2>Coverage</h2>
+            </div>
+            <span id="storageStatus" class="status-pill">Saved</span>
+          </div>
+          <div id="coverageCards" class="coverage-cards"></div>
+          <div id="bars" class="bar-stack"></div>
+        </section>
+
+        <section class="panel" aria-label="Settings">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Planner</p>
+              <h2>Settings</h2>
+            </div>
+          </div>
+          <form id="settingsForm" class="settings-form">
+            <label>
+              Race mode
+              <select id="raceMode">
+                <option value="obstacle">Obstacle race</option>
+                <option value="free">Free race</option>
+              </select>
+            </label>
+            <label>
+              Coverage mode
+              <select id="coverageMode">
+                <option value="physical">Physical pairwise</option>
+                <option value="directed">Directed strict</option>
+              </select>
+            </label>
+            <label>
+              Change penalty
+              <input id="changePenalty" type="range" min="0" max="8" step="0.5">
+            </label>
+            <label>
+              Robot length for parking (mm)
+              <input id="parkingRobotLength" type="number" min="100" max="300" step="5" inputmode="numeric">
+            </label>
+            <div class="condition-box">
+              <label class="condition-toggle"><input id="specialConditions" type="checkbox"> Special conditions</label>
+              <label>
+                Condition profile
+                <select id="conditionProfile">
+                  <option value="normal">Normal conditions</option>
+                  <optgroup label="Lighting">
+                    <option value="low-light">Low light</option>
+                    <option value="bright-light">Bright light</option>
+                    <option value="mixed-light">Mixed light</option>
+                  </optgroup>
+                  <optgroup label="Temperature">
+                    <option value="cold-field">Cold field</option>
+                    <option value="warm-field">Warm field</option>
+                  </optgroup>
+                  <optgroup label="Other">
+                    <option value="low-battery">Low battery</option>
+                    <option value="custom">Custom condition</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label>
+                Custom checks
+                <textarea id="conditionChecks" rows="2" placeholder="Lighting angle, field dust, tire temperature, battery state..."></textarea>
+              </label>
+            </div>
+            <div class="check-grid">
+              <label><input id="includeCW" type="checkbox"> CW</label>
+              <label><input id="includeCCW" type="checkbox"> CCW</label>
+              <label><input id="includeZoneStart" type="checkbox"> Zone start</label>
+              <label><input id="includeParkingStart" type="checkbox"> Parking start</label>
+              <label><input id="includeOppositeZone" type="checkbox"> Opposite zone</label>
+              <label><input id="strictStartGateRule" type="checkbox"> Start gate rule</label>
+              <label><input id="mirrorStartGateRule" type="checkbox"> Mirror start gates</label>
+              <label><input id="retestFailedTransitions" type="checkbox"> Retest issues</label>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel" aria-label="Preview deck">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Ahead</p>
+              <h2>Next setups</h2>
+            </div>
+          </div>
+          <div id="previewDeck" class="preview-list"></div>
+        </section>
+
+        <section class="panel" aria-label="History">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Log</p>
+              <h2>History</h2>
+            </div>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="app-footer">
+      <span>Built by Caltron</span>
+      <span>Unofficial testing software for WRO Future Engineers practice.</span>
+    </footer>
+
+    <template id="fieldTemplate">
+      <div class="track-label label-a">A Start-Finish</div>
+      <div class="track-label label-b">B</div>
+      <div class="track-label label-c">C</div>
+      <div class="track-label label-d">D</div>
+      <div class="outer-line"></div>
+      <div class="inner-block"></div>
+      <div class="parking">
+        <span></span>
+        <span></span>
+      </div>
+      <div class="gate-lines top-lines"></div>
+      <div class="gate-lines right-lines"></div>
+      <div class="gate-lines bottom-lines"></div>
+      <div class="gate-lines left-lines"></div>
+    </template>
+
+    <script src="engine.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

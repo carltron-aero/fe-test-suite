@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WRO FE Reliability Analytics</title>
+    <link rel="stylesheet" href="heatmap-concept.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Unofficial WRO Future Engineers testing suite</p>
+        <h1>Reliability Analytics</h1>
+        <p class="brand-line">Made by Caltron</p>
+      </div>
+      <div class="header-actions">
+        <span id="dataModePill" class="status-pill">Simulated data</span>
+        <a class="button ghost" href="index.html">Test suite</a>
+      </div>
+    </header>
+
+    <main class="heatmap-shell">
+      <div class="main-stack">
+        <section class="panel hero-panel" aria-label="Coverage overview">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Evidence</p>
+              <h2>Reliability Overview</h2>
+            </div>
+            <div class="segmented" role="group" aria-label="Direction filter">
+              <button class="segment active" type="button" data-direction="all">All</button>
+              <button class="segment" type="button" data-direction="cw">CW</button>
+              <button class="segment" type="button" data-direction="ccw">CCW</button>
+              <button class="segment" type="button" data-direction="weak">Weak</button>
+            </div>
+          </div>
+
+          <div class="overview-grid">
+            <article class="score-card">
+              <span>Coverage</span>
+              <strong id="coverageScore">72%</strong>
+              <div class="meter"><span style="width:72%"></span></div>
+            </article>
+            <article class="score-card">
+              <span>Transitions</span>
+              <strong id="transitionCount">251/348</strong>
+              <div class="meter blue"><span style="width:72%"></span></div>
+            </article>
+            <article class="score-card warning">
+              <span>Weak clusters</span>
+              <strong id="weakCount">9</strong>
+              <div class="meter amber"><span style="width:42%"></span></div>
+            </article>
+            <article class="score-card danger">
+              <span>Issue pressure</span>
+              <strong id="issuePressure">14%</strong>
+              <div class="meter red"><span style="width:14%"></span></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel graph-panel" aria-label="Reliability graphs">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Measurements</p>
+              <h2>Reliability Breakdowns</h2>
+            </div>
+            <span id="graphWindowPill" class="status-pill">Simulated example</span>
+          </div>
+          <div class="chart-grid">
+            <article class="chart-card stability-card">
+              <div class="chart-head">
+                <div>
+                  <span>Run stability</span>
+                  <strong id="stabilityScore">82%</strong>
+                </div>
+                <span class="chart-chip">Target 85%</span>
+              </div>
+              <svg id="stabilityChart" class="chart-svg large" viewBox="0 0 640 230" role="img" aria-label="Simulated pass-rate stability over recent runs"></svg>
+              <div class="simulated-stamp" aria-hidden="true"><span>SIMULATED</span></div>
+              <div class="chart-legend" aria-label="Run stability legend">
+                <span><i class="legend-line pass"></i>Rolling pass rate</span>
+                <span><i class="legend-line target"></i>85% target</span>
+                <span><i class="legend-bar issue"></i>Issue count per run</span>
+              </div>
+            </article>
+            <article class="chart-card">
+              <div class="chart-head">
+                <div>
+                  <span>Direction balance</span>
+                  <strong id="directionScore">CW + CCW</strong>
+                </div>
+              </div>
+              <svg id="directionChart" class="chart-svg" viewBox="0 0 420 220" role="img" aria-label="Simulated direction and start-mode stability"></svg>
+              <div class="simulated-stamp" aria-hidden="true"><span>SIMULATED</span></div>
+              <div class="chart-legend" aria-label="Direction chart legend">
+                <span><i class="legend-bar pass"></i>Pass rate</span>
+                <span><i class="legend-bar issue"></i>Issue rate marker</span>
+              </div>
+            </article>
+            <article class="chart-card">
+              <div class="chart-head">
+                <div>
+                  <span>Failure pressure</span>
+                  <strong id="issueScore">Tag mix</strong>
+                </div>
+              </div>
+              <svg id="issueChart" class="chart-svg" viewBox="0 0 420 220" role="img" aria-label="Simulated failure-tag breakdown"></svg>
+              <div class="simulated-stamp" aria-hidden="true"><span>SIMULATED</span></div>
+              <div class="chart-legend" aria-label="Failure chart legend">
+                <span><i class="legend-dot mixed"></i>Tag share</span>
+                <span><i class="legend-bar mixed"></i>Relative count</span>
+              </div>
+            </article>
+            <article class="chart-card">
+              <div class="chart-head">
+                <div>
+                  <span>Condition comparison</span>
+                  <strong id="conditionScore">Normal baseline</strong>
+                </div>
+              </div>
+              <svg id="conditionChart" class="chart-svg" viewBox="0 0 420 220" role="img" aria-label="Normal and special condition pass-rate comparison"></svg>
+              <div class="simulated-stamp" aria-hidden="true"><span>SIMULATED</span></div>
+              <div class="chart-legend" aria-label="Condition chart legend">
+                <span><i class="legend-bar pass"></i>Pass rate</span>
+                <span><i class="legend-bar issue"></i>Issue rate marker</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel matrix-panel" aria-label="Transition matrix">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Exact pairs</p>
+              <h2>From -> To Matrix</h2>
+            </div>
+            <div class="legend">
+              <span><i class="low"></i>0</span>
+              <span><i class="mid"></i>50</span>
+              <span><i class="high"></i>100</span>
+            </div>
+          </div>
+          <div id="transitionMatrix" class="matrix-wrap"></div>
+        </section>
+      </div>
+
+      <aside class="side-stack">
+        <section class="panel insights-panel" aria-label="Improvement recommendations">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Recommendations</p>
+              <h2>Improvement Signals</h2>
+            </div>
+            <span id="insightCount" class="status-pill">0 active</span>
+          </div>
+          <div id="insightList" class="insight-list"></div>
+        </section>
+
+        <section class="panel field-panel" aria-label="Field coverage map">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Spatial view</p>
+              <h2>Field Pressure</h2>
+            </div>
+          </div>
+          <div id="fieldMap" class="field-map" aria-label="Simulated field heatmap"></div>
+          <div class="chart-legend field-legend" aria-label="Field pressure legend">
+            <span><i class="legend-dot low"></i>Weak area</span>
+            <span><i class="legend-dot mid"></i>Mixed</span>
+            <span><i class="legend-dot high"></i>Stable</span>
+          </div>
+        </section>
+
+        <section class="panel selected-panel" aria-label="Selected transition">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Selected</p>
+              <h2 id="selectedTitle">RI1 -> GO3</h2>
+            </div>
+            <span id="selectedBadge" class="status-pill issue">Risk</span>
+          </div>
+          <div class="selected-grid">
+            <div><span>Attempts</span><strong id="selectedAttempts">7</strong></div>
+            <div><span>Pass rate</span><strong id="selectedPassRate">57%</strong></div>
+            <div><span>Last seen</span><strong id="selectedLastSeen">2 runs</strong></div>
+            <div><span>Setup value</span><strong id="selectedValue">High</strong></div>
+          </div>
+          <div class="sparkline" aria-hidden="true">
+            <span class="pass"></span><span class="pass"></span><span class="issue"></span><span class="pass"></span><span class="issue"></span><span class="pass"></span><span class="open"></span>
+          </div>
+        </section>
+
+        <section class="panel weak-panel" aria-label="Weak cases">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Queue</p>
+              <h2>Retest Candidates</h2>
+            </div>
+          </div>
+          <div id="weakList" class="weak-list"></div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="app-footer">
+      <span>Built by Caltron</span>
+      <span>Unofficial testing software for WRO Future Engineers practice.</span>
+    </footer>
+
+    <script src="engine.js"></script>
+    <script src="heatmap-concept.js"></script>
+  </body>
+</html>
