@@ -961,3 +961,5 @@ a {
     flex-direction: column;
   }
 }
+.matrix-note { margin: 0 0 12px; color: #5e6c68; font-size: 13px; }
+.live-analytics .selected-panel .sparkline { display: none; }

@@ -2,6 +2,7 @@
   "use strict";
 
   const Engine = window.WroPlannerEngine;
+  const International = window.WroInternational;
   const STORAGE_KEY = "wro-fe-test-planner-v1";
   const FIELD_SIZE = 3000;
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -77,6 +78,11 @@
       "historyList",
       "settingsForm",
       "raceMode",
+      "ruleset",
+      "surpriseRule",
+      "drawBtn",
+      "ruleNote",
+      "ruleSource",
       "coverageMode",
       "changePenalty",
       "parkingRobotLength",
@@ -103,10 +109,13 @@
     els.exportBtn.addEventListener("click", exportState);
     els.importInput.addEventListener("change", importState);
     els.resetBtn.addEventListener("click", resetState);
+    els.drawBtn.addEventListener("click", drawRound);
 
     for (const id of [
       "coverageMode",
       "raceMode",
+      "ruleset",
+      "surpriseRule",
       "changePenalty",
       "includeCW",
       "includeCCW",
@@ -153,7 +162,8 @@
   function migrateState(input) {
     const fresh = defaultState();
     const migrated = Object.assign(fresh, input || {});
-    migrated.settings = Engine.normalizeSettings(migrated.settings);
+    const savedSettings = input?.settings || {};
+    migrated.settings = Engine.normalizeSettings({ ruleset: "international", ...savedSettings });
     migrated.records = Array.isArray(migrated.records) ? migrated.records.map(normalizeRecord) : [];
     migrated.currentPlan = normalizePlan(migrated.currentPlan, migrated.currentLayoutKey, migrated.records.length);
     return migrated;
@@ -164,6 +174,14 @@
     next.note = typeof next.note === "string" ? next.note : "";
     next.failureTags = Array.isArray(next.failureTags) ? next.failureTags.filter((tag) => failureTagById(tag)) : [];
     next.condition = normalizeConditionSnapshot(next.condition);
+    if (Number.isInteger(next.modifiedPasses) && next.modifiedPasses >= 0 && next.modifiedPasses <= 3) {
+      next.repaired = next.repaired === true;
+      next.modifiedBonus = next.modifiedPasses * 5 / (next.repaired ? 2 : 1);
+    } else {
+      delete next.modifiedPasses;
+      delete next.repaired;
+      delete next.modifiedBonus;
+    }
     return next;
   }
 
@@ -199,12 +217,12 @@
   }
 
   function ensureCurrentLayout() {
-    if (state.currentLayoutKey && !layoutIsValidForMode(state.currentLayoutKey, state.settings.raceMode)) {
+    if (state.currentLayoutKey && !Engine.layoutMatchesSettings(state.currentLayoutKey, state.settings)) {
       state.currentLayoutKey = null;
       state.currentPlan = null;
     }
-    if (state.lastLayoutKey && !layoutIsValidForMode(state.lastLayoutKey, state.settings.raceMode)) {
-      state.lastLayoutKey = null;
+    if (state.lastLayoutKey && !Engine.layoutMatchesSettings(state.lastLayoutKey, state.settings)) {
+      state.lastLayoutKey = lastAttemptedLayoutKey();
     }
     if (state.currentPlan && state.currentPlan.layoutKey !== state.currentLayoutKey) {
       state.currentPlan = null;
@@ -218,6 +236,17 @@
 
   function nextSuggestion() {
     return Engine.suggestNext(state) || fallbackSuggestion();
+  }
+
+  function drawRound() {
+    if (state.settings.ruleset !== "international") return;
+    const { config, direction, zoneNumber } = International.drawRound(state.settings);
+    if (state.currentLayoutKey) state.lastLayoutKey = state.currentLayoutKey;
+    const variants = Engine.legalRunVariants(config, state.settings).filter((variant) =>
+      variant.direction === direction && variant.zoneNumber === zoneNumber);
+    applySuggestion({ layoutKey: Engine.configKey(config), variants, kind: "draw", reason: "Randomised round" });
+    saveState();
+    render();
   }
 
   function fallbackSuggestion() {
@@ -251,19 +280,24 @@
   }
 
   function updateSettingsFromForm() {
-    const previousRaceMode = state.settings.raceMode;
+    const previous = state.settings;
+    const previousRaceMode = previous.raceMode;
     const selectedRaceMode = els.raceMode.value;
+    const selectedRuleset = els.ruleset.value;
+    const preserveGermanSettings = previous.ruleset !== "german" || selectedRuleset !== "german";
     const preserveObstacleOnlySettings = previousRaceMode === "free" || selectedRaceMode === "free";
     const next = Object.assign({}, state.settings, {
+      ruleset: selectedRuleset,
+      surpriseRule: els.surpriseRule.disabled ? previous.surpriseRule : els.surpriseRule.checked,
       raceMode: selectedRaceMode,
       coverageMode: els.coverageMode.value,
       includeCW: els.includeCW.checked,
       includeCCW: els.includeCCW.checked,
       includeZoneStart: els.includeZoneStart.checked,
       includeParkingStart: preserveObstacleOnlySettings ? state.settings.includeParkingStart : els.includeParkingStart.checked,
-      includeOppositeZone: els.includeOppositeZone.checked,
-      strictStartGateRule: preserveObstacleOnlySettings ? state.settings.strictStartGateRule : els.strictStartGateRule.checked,
-      mirrorStartGateRule: preserveObstacleOnlySettings ? state.settings.mirrorStartGateRule : els.mirrorStartGateRule.checked,
+      includeOppositeZone: preserveGermanSettings ? previous.includeOppositeZone : els.includeOppositeZone.checked,
+      strictStartGateRule: preserveObstacleOnlySettings || preserveGermanSettings ? previous.strictStartGateRule : els.strictStartGateRule.checked,
+      mirrorStartGateRule: preserveObstacleOnlySettings || preserveGermanSettings ? previous.mirrorStartGateRule : els.mirrorStartGateRule.checked,
       retestFailedTransitions: els.retestFailedTransitions.checked,
       specialConditions: els.specialConditions.checked,
       conditionProfile: els.specialConditions.checked ? els.conditionProfile.value : "normal",
@@ -274,14 +308,21 @@
     if (!next.includeCW && !next.includeCCW) {
       next.includeCW = true;
     }
-    if (!next.includeZoneStart && !next.includeParkingStart && !next.includeOppositeZone) {
+    if (!next.includeZoneStart && !next.includeParkingStart &&
+        (selectedRuleset === "international" || !next.includeOppositeZone)) {
       next.includeZoneStart = true;
     }
     state.settings = Engine.normalizeSettings(next);
-    if (state.settings.raceMode !== previousRaceMode) {
+    if (state.settings.raceMode !== previousRaceMode || state.settings.ruleset !== previous.ruleset ||
+        state.settings.surpriseRule !== previous.surpriseRule || state.settings.includeCW !== previous.includeCW ||
+        state.settings.includeCCW !== previous.includeCCW || state.settings.includeZoneStart !== previous.includeZoneStart ||
+        state.settings.includeParkingStart !== previous.includeParkingStart ||
+        state.settings.includeOppositeZone !== previous.includeOppositeZone ||
+        state.settings.strictStartGateRule !== previous.strictStartGateRule ||
+        state.settings.mirrorStartGateRule !== previous.mirrorStartGateRule) {
       state.currentLayoutKey = null;
       state.currentPlan = null;
-      state.lastLayoutKey = null;
+      state.lastLayoutKey = lastAttemptedLayoutKey();
     }
     saveState();
     ensureCurrentLayout();
@@ -290,6 +331,23 @@
 
   function renderSettings() {
     const settings = Engine.normalizeSettings(state.settings);
+    const international = settings.ruleset === "international";
+    const open = settings.raceMode === "free";
+    els.ruleset.value = settings.ruleset;
+    els.surpriseRule.disabled = !international || open;
+    els.surpriseRule.checked = !els.surpriseRule.disabled && settings.surpriseRule;
+    els.drawBtn.hidden = !international;
+    els.ruleNote.textContent = !international ? "German competition layouts and saved practice results." : open
+      ? "Draw a direction, starting section, legal zone and nominal 600 or 1,000 mm corridors."
+      : settings.surpriseRule ? "The modified sign changes colour and height. Pass it as indicated by its original colour."
+        : "Draw from the 36-card deck. The parking straight uses the inner sign positions only.";
+    const showSurpriseRules = international && !open && settings.surpriseRule;
+    els.ruleSource.textContent = showSurpriseRules ? "Official Surprise Rule" : "Rules";
+    els.ruleSource.href = !international
+      ? "https://www.weltfinalepartner.worldrobotolympiad.de/website/docs/wro2026/WRO2026-FE-Regelwerk.pdf"
+      : showSurpriseRules
+        ? "https://wro-association.org/wp-content/uploads/WRO-2026-Future-Engineers-Extra-Task.pdf"
+        : "https://wro-association.org/wp-content/uploads/WRO-2026-Future-Engineers-Self-Driving-Cars-General-Rules.pdf";
     els.raceMode.value = settings.raceMode;
     els.coverageMode.value = settings.coverageMode;
     els.changePenalty.value = String(settings.changePenalty);
@@ -303,13 +361,16 @@
     els.includeCCW.checked = settings.includeCCW;
     els.includeZoneStart.checked = settings.includeZoneStart;
     els.includeParkingStart.checked = settings.raceMode === "obstacle" && settings.includeParkingStart;
-    els.includeOppositeZone.checked = settings.includeOppositeZone;
-    els.strictStartGateRule.checked = settings.raceMode === "obstacle" && settings.strictStartGateRule;
-    els.mirrorStartGateRule.checked = settings.raceMode === "obstacle" && settings.mirrorStartGateRule;
+    els.includeOppositeZone.checked = !international && settings.includeOppositeZone;
+    els.strictStartGateRule.checked = !international && !open && settings.strictStartGateRule;
+    els.mirrorStartGateRule.checked = !international && !open && settings.mirrorStartGateRule;
     els.retestFailedTransitions.checked = settings.retestFailedTransitions;
     els.includeParkingStart.disabled = settings.raceMode === "free";
-    els.strictStartGateRule.disabled = settings.raceMode === "free";
-    els.mirrorStartGateRule.disabled = settings.raceMode === "free";
+    els.includeZoneStart.disabled = international && open;
+    if (els.includeZoneStart.disabled) els.includeZoneStart.checked = true;
+    els.includeOppositeZone.disabled = international;
+    els.strictStartGateRule.disabled = international || open;
+    els.mirrorStartGateRule.disabled = international || open;
   }
 
   function render() {
@@ -345,7 +406,8 @@
   }
 
   function buildFieldSvg(config) {
-    const isObstacle = Array.isArray(config);
+    const international = config.ruleset === "international";
+    const isObstacle = Array.isArray(config) || config.raceMode === "obstacle";
     const offsets = isObstacle ? { top: 1000, right: 1000, bottom: 1000, left: 1000 } : config;
     const inner = innerRect(offsets);
     const svg = svgEl("svg", {
@@ -357,18 +419,28 @@
 
     drawSvgDefs(svg);
     svg.appendChild(svgEl("rect", { x: 0, y: 0, width: FIELD_SIZE, height: FIELD_SIZE, class: "mat-bg" }));
-    drawObstacleMarkerLines(svg);
-    drawObstacleMarkers(svg);
+    if (!international || isObstacle) {
+      drawObstacleMarkerLines(svg);
+      drawObstacleMarkers(svg);
+    }
     drawGuideLines(svg);
     drawBarriers(svg, inner);
-    drawSectionLabels(svg);
+    drawSectionLabels(svg, config.startSection || "A", international);
     if (isObstacle) {
-      drawStartZones(svg);
-      drawParking(svg);
+      if (international) {
+        const zones = svgEl("g", { transform: sectionRotation(config.startSection) });
+        drawStartZones(zones, true);
+        drawParking(zones, true);
+        svg.appendChild(zones);
+      } else {
+        drawStartZones(svg);
+        drawParking(svg);
+      }
       drawObstacles(svg, config, offsets);
     } else {
       drawFreeMeasurements(svg, offsets, inner);
-      drawStartZones(svg);
+      if (international) drawOpenZones(svg, config);
+      else drawStartZones(svg);
     }
     drawDirectionIndicators(svg, config);
     return svg;
@@ -461,7 +533,7 @@
   }
 
   function drawDirectionIndicators(svg, config) {
-    const directions = new Set(Engine.legalRunVariants(config, state.settings).map((variant) => variant.direction));
+    const directions = new Set(visibleRunVariants(config).map((variant) => variant.direction));
     const rows = [];
     if (directions.size > 1) {
       if (directions.has("CW")) rows.push({ direction: "CW", y: 3095, x1: 1280, x2: 900, labelX: 1090 });
@@ -508,24 +580,49 @@
     svg.appendChild(group);
   }
 
-  function drawSectionLabels(svg) {
+  function drawSectionLabels(svg, startSection, international) {
     const labels = [
       ["C", 1500, 165],
       ["D", 2835, 1510],
-      ["A START-FINISH", 1500, 2835],
+      ["A", 1500, 2835],
       ["B", 165, 1510],
     ];
     for (const [label, x, y] of labels) {
-      svg.appendChild(svgEl("text", { x, y, class: "section-label", "text-anchor": "middle" }, label));
+      const active = label === startSection;
+      svg.appendChild(svgEl("text", { x, y, class: `section-label${active && international ? " active-section" : ""}`,
+        "text-anchor": "middle" }, active && !international ? `${label} START–FINISH` : label));
     }
   }
 
-  function drawStartZones(svg) {
+  function sectionRotation(section) {
+    return `rotate(${90 * International.sections.indexOf(section)} 1500 1500)`;
+  }
+
+  function drawOpenZones(svg, config) {
+    const group = svgEl("g", { transform: `rotate(${90 * (International.sections.indexOf(config.startSection) - 1)} 1500 1500)` });
+    const edges = [0, 400, 600, 1000];
+    const variants = visibleRunVariants(config);
+    for (const zone of International.openStartZones(config)) {
+      const column = (zone - 1) % 3;
+      const x = edges[column];
+      const y = zone <= 3 ? 1000 : 1500;
+      const width = edges[column + 1] - x;
+      const selected = variants.some((variant) => variant.zoneNumber === zone);
+      group.appendChild(svgEl("rect", { x, y, width, height: 500, class: selected ? "start-zone" : "start-zone secondary-zone" }));
+      const centre = [x + width / 2, y + 250];
+      group.appendChild(svgEl("text", { x: centre[0], y: centre[1], class: "tiny-label start-zone-label",
+        transform: `rotate(${-90 * (International.sections.indexOf(config.startSection) - 1)} ${centre.join(" ")})`,
+        "text-anchor": "middle" }, zone));
+    }
+    svg.appendChild(group);
+  }
+
+  function drawStartZones(svg, international = false) {
     const zones = [
       { x: 1500, y: 2400, cls: "start-zone primary-zone", label: "zone" },
       { x: 1000, y: 2400, cls: "start-zone secondary-zone", label: "opposite" },
     ];
-    for (const zone of zones) {
+    for (const zone of international ? zones.slice(0, 1) : zones) {
       svg.appendChild(svgEl("rect", {
         x: zone.x,
         y: zone.y,
@@ -543,10 +640,10 @@
     }
   }
 
-  function drawParking(svg) {
+  function drawParking(svg, international = false) {
     const robotLength = clampNumber(state.settings.parkingRobotLength, 100, 300, Engine.DEFAULT_SETTINGS.parkingRobotLength);
     const gap = robotLength * 1.5;
-    const wallThickness = 19;
+    const wallThickness = international ? 20 : 19;
     const wallLength = 200;
     const rightWallX = 2000;
     const leftWallX = rightWallX - gap - wallThickness;
@@ -608,17 +705,25 @@
   }
 
   function drawObstacles(svg, config, offsets) {
-    Engine.SECTIONS.forEach((section, index) => {
-      const item = config[index];
+    const international = config.ruleset === "international";
+    const modified = international ? International.modifiedSign(config) : null;
+    for (const section of Engine.SECTIONS) for (const item of Engine.sectionSigns(config, section.id)) {
       const point = obstaclePoint(section.id, item.band, item.gate, offsets);
+      const isModified = modified && section.id === modified.section && item.gate === modified.gate;
+      const visibleColor = isModified ? modified.visibleColor : item.color;
+      const size = international ? 50 : OBSTACLE_SIZE;
       const group = svgEl("g", { class: "obstacle-node" });
+      if (isModified) {
+        group.appendChild(svgEl("circle", { cx: point.x, cy: point.y, r: 43, class: "modified-ring" }));
+        group.appendChild(svgEl("title", {}, `Modified sign, ${modified.height} mm, original ${item.color}`));
+      }
       group.appendChild(svgEl("rect", {
-        x: point.x - OBSTACLE_SIZE / 2,
-        y: point.y - OBSTACLE_SIZE / 2,
-        width: OBSTACLE_SIZE,
-        height: OBSTACLE_SIZE,
+        x: point.x - size / 2,
+        y: point.y - size / 2,
+        width: size,
+        height: size,
         rx: 4,
-        class: item.color === "R" ? "obstacle-block red-block" : "obstacle-block green-block",
+        class: visibleColor === "R" ? "obstacle-block red-block" : "obstacle-block green-block",
       }));
       const label = obstacleLabelPosition(section.id, point);
       group.appendChild(svgEl("text", {
@@ -626,9 +731,9 @@
         y: label.y,
         class: "obstacle-label",
         "text-anchor": label.anchor,
-      }, `${section.id} ${Engine.shortStateLabel(item)}`));
+      }, `${section.id} ${visibleColor}${item.band}${item.gate}${isModified ? ` · ${modified.height} mm` : ""}`));
       svg.appendChild(group);
-    });
+    }
   }
 
   function obstaclePoint(sectionId, bandId, gateId, offsets) {
@@ -701,6 +806,7 @@
     const newFeatures = countNew(featureUnion, progress.features);
     const changes = Engine.changesBetweenKeys(state.lastLayoutKey, state.currentLayoutKey);
     const condition = currentConditionSnapshot();
+    const modified = config.ruleset === "international" ? International.modifiedSign(config) : null;
     els.layoutMeta.innerHTML = [
       metric("Legal runs", legalVariants.length),
       metric(newCoverageLabel(), newAtoms),
@@ -709,6 +815,11 @@
       metric("Plan", planLabel(state.currentPlan)),
       metric("Condition", conditionLabel(condition)),
     ].join("");
+    if (modified) {
+      const original = Engine.COLORS.find((color) => color.id === modified.color);
+      const visible = Engine.COLORS.find((color) => color.id === modified.visibleColor);
+      els.layoutMeta.innerHTML += `<p class="modified-note"><strong>${modified.section}${modified.gate} · ${escapeHtml(visible.label)} · ${modified.height} mm</strong><br>Original colour ${escapeHtml(original.label)}. Pass on the ${original.passSide}. Each correct pass earns 5 points, up to 15.</p>`;
+    }
   }
 
   function countNew(items, covered) {
@@ -730,7 +841,7 @@
     }
     const changes = Engine.describeChanges(state.lastLayoutKey, state.currentLayoutKey);
     if (changes.length === 0) {
-      els.changeList.innerHTML = emptyState("No obstacle changes.");
+      els.changeList.innerHTML = emptyState(state.settings.raceMode === "free" ? "No wall or start changes." : "No obstacle changes.");
       return;
     }
     els.changeList.innerHTML = changes
@@ -754,7 +865,7 @@
     els.runList.innerHTML = variants.map((variant) => runCard(layoutKey, variant)).join("");
     els.runList.querySelectorAll("[data-run-action]").forEach((button) => {
       button.addEventListener("click", () => {
-        recordRun(button.dataset.variant, button.dataset.runAction);
+        recordRun(button.dataset.variant, button.dataset.runAction, button.closest(".run-card"));
       });
     });
     els.runList.querySelectorAll("[data-tag]").forEach((button) => {
@@ -780,17 +891,26 @@
     const statusText = record ? resultLabel(record.result) : "Open";
     const condition = record ? record.condition : currentConditionSnapshot();
     const failurePanel = record && record.result === "issue" ? failureTagPanel(record) : "";
+    const start = variant.zoneNumber ? `${startMode} ${variant.zoneNumber}` : startMode;
+    const surprise = Boolean(Engine.parseConfigKey(layoutKey).surprise);
     return `
       <div class="run-card ${statusClass}">
         <div class="run-head">
           <div>
-            <div class="run-title">${escapeHtml(direction)} - ${escapeHtml(startMode)}</div>
+            <div class="run-title">${escapeHtml(direction)} - ${escapeHtml(start)}</div>
             <div class="run-meta">${escapeHtml(statusText)} - ${escapeHtml(conditionLabel(condition))}</div>
           </div>
           <div class="run-meta">${escapeHtml(variantKey)}</div>
         </div>
         ${runStatsMarkup(stats)}
         ${failurePanel}
+        ${surprise ? `<div class="bonus-fields">
+          <label>Correct modified-sign passes <select data-modified-passes>
+            <option value="">Unscored</option>${[0, 1, 2, 3].map((n) => `<option value="${n}"${record?.modifiedPasses === n ? " selected" : ""}>${n}</option>`).join("")}
+          </select></label>
+          <label><input type="checkbox" data-repair ${record?.repaired ? "checked" : ""}> Repair taken</label>
+          ${record?.modifiedPasses != null ? `<span>${record.modifiedBonus} bonus points${record.repaired ? " after repair" : ""}</span>` : ""}
+        </div>` : ""}
         <div class="run-actions">
           <button class="button primary" type="button" data-run-action="pass" data-variant="${escapeHtml(variantKey)}">Pass</button>
           <button class="button" type="button" data-run-action="issue" data-variant="${escapeHtml(variantKey)}">Issue</button>
@@ -914,14 +1034,17 @@
     return item ? item.label : mode;
   }
 
-  function recordRun(variantKey, result) {
-    state.records.push(createRunRecord(state.currentLayoutKey, variantKey, result));
+  function recordRun(variantKey, result, card) {
+    state.records.push(createRunRecord(state.currentLayoutKey, variantKey, result, card));
     state.lastLayoutKey = state.currentLayoutKey;
     saveState();
     render();
   }
 
-  function createRunRecord(layoutKey, variantKey, result) {
+  function createRunRecord(layoutKey, variantKey, result, card) {
+    const value = card?.querySelector("[data-modified-passes]")?.value;
+    const modifiedPasses = result !== "skip" && /^[0-3]$/.test(value) ? Number(value) : null;
+    const repaired = Boolean(modifiedPasses !== null && card.querySelector("[data-repair]").checked);
     return {
       id: createId(),
       layoutKey,
@@ -932,6 +1055,7 @@
       condition: currentConditionSnapshot(),
       createdAt: new Date().toISOString(),
       raceMode: state.settings.raceMode,
+      ...(modifiedPasses === null ? {} : { modifiedPasses, repaired, modifiedBonus: modifiedPasses * 5 / (repaired ? 2 : 1) }),
     };
   }
 
@@ -947,7 +1071,8 @@
     for (const variant of variants) {
       const variantKey = Engine.runVariantKey(variant);
       if (latestCurrentRecord(state.currentLayoutKey, variantKey)) continue;
-      state.records.push(createRunRecord(state.currentLayoutKey, variantKey, "pass"));
+      const card = [...els.runList.querySelectorAll(".run-card")].find((item) => item.querySelector("[data-variant]").dataset.variant === variantKey);
+      state.records.push(createRunRecord(state.currentLayoutKey, variantKey, "pass", card));
       added += 1;
     }
     if (added > 0 || variants.every((variant) => latestCurrentRecord(state.currentLayoutKey, Engine.runVariantKey(variant)))) {
@@ -988,6 +1113,9 @@
     const minimal = Engine.minimalRunVariants(config, state.settings, state.records);
     const visibleKeys = new Set(minimal.map(Engine.runVariantKey));
     const legal = Engine.legalRunVariants(config, state.settings);
+    if (state.currentPlan?.kind === "draw" && state.currentPlan.layoutKey === layoutKey) {
+      return legal.filter((variant) => state.currentPlan.variantKeys.includes(Engine.runVariantKey(variant)));
+    }
     if (state.currentPlan && state.currentPlan.layoutKey === layoutKey) {
       for (const variantKey of state.currentPlan.variantKeys) visibleKeys.add(variantKey);
     }
@@ -1011,7 +1139,7 @@
 
   function lastAttemptedLayoutKey() {
     for (let i = state.records.length - 1; i >= 0; i -= 1) {
-      if (state.records[i].result === "pass" || state.records[i].result === "issue") {
+      if (Engine.recordMatchesSettings(state.records[i], state.settings) && (state.records[i].result === "pass" || state.records[i].result === "issue")) {
         return state.records[i].layoutKey;
       }
     }
@@ -1023,13 +1151,14 @@
     const cycle = Engine.exactRunCycleStats(state.records, state.settings);
     const coveragePercent = progress.targetCount ? Math.round((progress.coveredCount / progress.targetCount) * 100) : 0;
     const featurePercent = progress.featureTargetCount ? Math.round((progress.featureCoveredCount / progress.featureTargetCount) * 100) : 0;
-    const activeRecords = state.records.filter((record) => recordRaceMode(record) === state.settings.raceMode);
+    const activeRecords = state.records.filter((record) => Engine.recordMatchesSettings(record, state.settings));
     const attempts = activeRecords.filter((record) => record.result === "pass" || record.result === "issue").length;
     const passes = activeRecords.filter((record) => record.result === "pass").length;
     const issues = activeRecords.filter((record) => record.result === "issue").length;
     const passPercent = attempts ? Math.round((passes / attempts) * 100) : 0;
-    const exactLabel = state.settings.raceMode === "free" ? "Geometry" : state.settings.includeZoneStart ? "Targets" : "Transitions";
-    const barLabel = state.settings.raceMode === "free" ? "Exact geometry" : state.settings.includeZoneStart ? "Exact targets" : "Exact transitions";
+    const sampled = state.settings.ruleset === "international" && state.settings.raceMode === "obstacle";
+    const exactLabel = sampled ? "Practice targets" : state.settings.raceMode === "free" ? "Geometry" : "Targets";
+    const barLabel = sampled ? "Sampled transitions" : state.settings.raceMode === "free" ? "Exact geometry" : "Exact targets";
     const cycleValue = cycle.total
       ? `${cycle.cycle} (${cycle.cycleCompleted}/${cycle.total})`
       : String(cycle.cycle);
@@ -1038,7 +1167,7 @@
       coverageCard("Coverage", `${coveragePercent}%`),
       coverageCard("Attempts", attempts),
       coverageCard("Issues", issues),
-      coverageCard("Cycle", cycleValue),
+      coverageCard(sampled ? "Practice cycle" : "Cycle", cycleValue),
     ].join("");
     els.bars.innerHTML = [
       barRow(barLabel, coveragePercent),
@@ -1060,7 +1189,7 @@
   }
 
   function recommendationItems() {
-    const records = state.records.filter((record) => recordRaceMode(record) === state.settings.raceMode && (record.result === "pass" || record.result === "issue"));
+    const records = state.records.filter((record) => Engine.recordMatchesSettings(record, state.settings) && (record.result === "pass" || record.result === "issue"));
     if (records.length === 0) return [];
     const recommendations = [];
     const weakCount = Engine.weakAtomStats(state.records, state.settings).size;
@@ -1173,10 +1302,6 @@
     return state.settings.includeZoneStart ? "New targets" : "New transitions";
   }
 
-  function recordRaceMode(record) {
-    return record.raceMode || (record.layoutKey && record.layoutKey.startsWith("FREE:") ? "free" : "obstacle");
-  }
-
   function barRow(label, percent) {
     const safe = Math.max(0, Math.min(100, Number(percent) || 0));
     return `
@@ -1246,7 +1371,7 @@
         return `
           <div class="history-item">
             <strong>${escapeHtml(layoutLabel(record.layoutKey))}</strong>
-            <span>${escapeHtml(variant.direction)} ${escapeHtml(labelForStartMode(variant.startMode))} - ${escapeHtml(resultLabel(record.result))}${escapeHtml(conditionText)}${escapeHtml(tags)}${escapeHtml(note)} - ${escapeHtml(time)}</span>
+            <span>${escapeHtml(variant.direction)} ${escapeHtml(labelForStartMode(variant.startMode))}${variant.zoneNumber ? ` ${variant.zoneNumber}` : ""} - ${escapeHtml(resultLabel(record.result))}${record.modifiedPasses != null ? ` · ${escapeHtml(String(record.modifiedBonus))} bonus points` : ""}${escapeHtml(conditionText)}${escapeHtml(tags)}${escapeHtml(note)} - ${escapeHtml(time)}</span>
           </div>`;
       })
       .join("");
@@ -1312,23 +1437,17 @@
     return `<div class="empty-state">${escapeHtml(text)}</div>`;
   }
 
-  function layoutRaceMode(key) {
-    return key && key.startsWith("FREE:") ? "free" : "obstacle";
-  }
-
-  function layoutIsValidForMode(key, mode) {
-    if (!key || layoutRaceMode(key) !== mode) return false;
-    if (mode !== "free") return true;
-    try {
-      const config = Engine.parseConfigKey(key);
-      return ["top", "right", "bottom", "left"].every((side) => Engine.FREE_OFFSETS.includes(config[side]));
-    } catch (error) {
-      return false;
-    }
-  }
-
   function layoutLabel(key) {
     if (!key) return "";
+    if (key.startsWith("INT:")) {
+      const config = Engine.parseConfigKey(key);
+      const count = config.signs.reduce((total, row) => total + row.length, 0);
+      return `${config.startSection} start · ${count} signs${config.surprise ? ` · ${config.surprise.section}${config.surprise.gate} modified` : ""}`;
+    }
+    if (key.startsWith("INTOPEN:")) {
+      const config = Engine.parseConfigKey(key);
+      return `${config.startSection} start · A${config.bottom} B${config.left} C${config.top} D${config.right}`;
+    }
     if (!key.startsWith("FREE:")) return key.replaceAll("-", " ");
     const config = Engine.parseConfigKey(key);
     return `A${config.bottom} B${config.left} C${config.top} D${config.right}`;
@@ -1336,6 +1455,7 @@
 
   function planLabel(plan) {
     if (!plan) return "Coverage";
+    if (plan.kind === "draw") return "Randomised round";
     if (plan.kind === "weakness") return "Weakness retest";
     if (plan.kind === "rotation") return "Rotation";
     return "Coverage";

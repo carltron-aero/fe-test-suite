@@ -67,10 +67,12 @@
 
   function liveData() {
     const state = loadPlannerState();
-    const records = state.records
+    state.settings = Engine.normalizeSettings(state.settings);
+    const records = (Array.isArray(state.records) ? state.records : [])
       .filter((record) => record && (record.result === "pass" || record.result === "issue"))
+      .filter((record) => Engine.recordMatchesSettings(record, state.settings))
       .map((record) => normalizeRecord(record));
-    const obstacleRecords = records.filter((record) => record.raceMode !== "free");
+    const obstacleRecords = state.settings.raceMode === "obstacle" ? records : [];
     return {
       state,
       records,
@@ -240,6 +242,7 @@
   }
 
   function cellColor(score) {
+    if (score == null) return "#cad2d0";
     const hue = Math.round(score * 1.42);
     const lightness = score < 42 ? 39 : score > 78 ? 42 : 46;
     return `hsl(${hue} 68% ${lightness}%)`;
@@ -249,10 +252,28 @@
     return Math.max(min, Math.min(max, value));
   }
 
-  function allPairs() {
+  function allPairs(live) {
+    const observed = new Map();
+    for (const record of fieldRecords(live)) {
+      const config = Engine.parseConfigKey(record.layoutKey);
+      const keys = new Set(Engine.directedObstaclePairs(config, record.direction).map((pair) => pair.join("|")));
+      for (const key of keys) {
+        const entry = observed.get(key) || { attempts: 0, issues: 0 };
+        entry.attempts += 1;
+        entry.issues += Number(record.result === "issue");
+        entry.lastSeen = record.createdAt;
+        observed.set(key, entry);
+      }
+    }
     const pairs = [];
     for (const from of STATES) {
       for (const to of STATES) {
+        if (live.hasRecords) {
+          const entry = observed.get(`${from}|${to}`) || { attempts: 0, issues: 0 };
+          const score = entry.attempts ? Math.round(100 * (entry.attempts - entry.issues) / entry.attempts) : null;
+          pairs.push({ ...entry, from, to, score, passRate: score, value: entry.issues ? "Retest" : entry.attempts ? "Observed" : "Untested" });
+          continue;
+        }
         const score = scoreFor(from, to);
         const attempts = attemptsFor(from, to);
         const issues = issuesFor(from, to, score);
@@ -270,6 +291,11 @@
     return pairs;
   }
 
+  function fieldRecords(live) {
+    return live.obstacleRecords.filter((record) => (activeDirection === "all") ||
+      (activeDirection === "weak" ? record.result === "issue" : record.direction.toLowerCase() === activeDirection));
+  }
+
   function renderMatrix(pairs) {
     const grid = document.createElement("div");
     grid.className = "matrix-grid";
@@ -284,13 +310,13 @@
         cell.type = "button";
         cell.className = [
           "matrix-cell",
-          pair.score < 42 ? "low" : "",
+          pair.score != null && pair.score < 42 ? "low" : "",
           pair.issues > 1 ? "issue" : "",
           selectedPair[0] === from && selectedPair[1] === to ? "active" : "",
         ].filter(Boolean).join(" ");
         cell.style.setProperty("--cell-color", cellColor(pair.score));
-        cell.setAttribute("aria-label", `${from} to ${to}: ${pair.score} percent`);
-        cell.innerHTML = `<span>${pair.score}</span>`;
+        cell.setAttribute("aria-label", `${from} to ${to}: ${pair.score == null ? "untested" : `${pair.score} percent`}`);
+        cell.innerHTML = `<span>${pair.score ?? "—"}</span>`;
         cell.addEventListener("click", () => {
           selectedPair = [from, to];
           render();
@@ -309,20 +335,39 @@
     return cell;
   }
 
-  function renderFieldMap() {
+  function renderFieldMap(live) {
+    const observed = new Map();
+    for (const record of fieldRecords(live)) {
+      const config = Engine.parseConfigKey(record.layoutKey);
+      for (const section of SECTIONS) {
+        const ids = [section, ...Engine.sectionSigns(config, section).map((item) => `${section}${item.band}${item.gate}`)];
+        for (const id of ids) {
+          const stats = observed.get(id) || { passes: 0, total: 0 };
+          stats.passes += Number(record.result === "pass");
+          stats.total += 1;
+          observed.set(id, stats);
+        }
+      }
+    }
+    const getScore = (id, sample) => {
+      if (!live.hasRecords) return sample;
+      const stats = observed.get(id);
+      return stats ? Math.round(100 * stats.passes / stats.total) : null;
+    };
+    fieldMapEl.setAttribute("aria-label", live.hasRecords ? "Run outcomes by sign position" : "Simulated field heatmap");
     fieldMapEl.replaceChildren();
     fieldMapEl.appendChild(div("guide-ring"));
     for (const item of [
       ["top", "C"], ["right", "D"], ["bottom", "A"], ["left", "B"],
     ]) {
-      const avg = sectionAverage(item[1]);
+      const avg = getScore(item[1], sectionAverage(item[1]));
       const band = div(`heat-band ${item[0]}`);
       band.style.setProperty("--band-color", cellColor(avg));
       fieldMapEl.appendChild(band);
     }
     for (const section of SECTIONS) {
       const label = div(`field-label ${section.toLowerCase()}`);
-      label.textContent = section === "A" ? "A start" : section;
+      label.textContent = live.state.settings.ruleset === "german" && section === "A" ? "A start" : section;
       fieldMapEl.appendChild(label);
     }
 
@@ -330,8 +375,9 @@
       const node = div(`hotspot ${point.band === "O" ? "square" : ""}`);
       node.style.left = `${point.x}%`;
       node.style.top = `${point.y}%`;
-      node.style.setProperty("--cell-color", cellColor(point.score));
-      node.title = `${point.section} ${point.band}${point.gate}: ${point.score}%`;
+      const score = getScore(`${point.section}${point.band}${point.gate}`, point.score);
+      node.style.setProperty("--cell-color", cellColor(score));
+      node.title = `${point.section} ${point.band}${point.gate}: ${score == null ? "untested" : `${score}%`}`;
       fieldMapEl.appendChild(node);
     }
     const stamp = div("simulated-stamp");
@@ -374,20 +420,22 @@
     return { section, band, gate, x, y, score };
   }
 
-  function renderSelected(pairs) {
+  function renderSelected(pairs, live) {
     const pair = pairs.find((item) => item.from === selectedPair[0] && item.to === selectedPair[1]) || pairs[0];
     selectedTitleEl.textContent = `${pair.from} -> ${pair.to}`;
-    selectedBadgeEl.textContent = pair.score < 55 || pair.issues > 1 ? "Risk" : "Ready";
-    selectedBadgeEl.classList.toggle("issue", pair.score < 55 || pair.issues > 1);
+    const risk = pair.score != null && (pair.score < 55 || pair.issues > 1);
+    selectedBadgeEl.textContent = pair.score == null ? "Untested" : risk ? "Risk" : "Observed";
+    selectedBadgeEl.classList.toggle("issue", risk);
     selectedAttemptsEl.textContent = String(pair.attempts);
-    selectedPassRateEl.textContent = `${pair.passRate}%`;
-    selectedLastSeenEl.textContent = pair.score > 80 ? "fresh" : lastSeenFor(pair.from, pair.to);
+    selectedPassRateEl.textContent = pair.passRate == null ? "—" : `${pair.passRate}%`;
+    selectedLastSeenEl.textContent = live.hasRecords ? pair.lastSeen ? new Date(pair.lastSeen).toLocaleDateString() : "—"
+      : pair.score > 80 ? "fresh" : lastSeenFor(pair.from, pair.to);
     selectedValueEl.textContent = pair.value;
   }
 
-  function renderWeakList(pairs) {
+  function renderWeakList(pairs, live) {
     const weak = pairs
-      .slice()
+      .filter((pair) => !live.hasRecords || pair.issues > 0)
       .sort((a, b) => riskScore(b) - riskScore(a))
       .slice(0, 5);
     weakListEl.replaceChildren(...weak.map((pair) => {
@@ -399,7 +447,7 @@
         <div>
           <strong>${pair.from} -> ${pair.to}</strong>
           <span>${pair.attempts} attempts, ${pair.passRate}% pass rate</span>
-          <div class="tag-row"><span class="tag">${tagA}</span><span class="tag">${tagB}</span></div>
+          ${live.hasRecords ? "" : `<div class="tag-row"><span class="tag">${tagA}</span><span class="tag">${tagB}</span></div>`}
         </div>
         <div class="risk">${Math.round(riskScore(pair))}</div>
       `;
@@ -1030,13 +1078,13 @@
 
   function render() {
     const live = liveData();
-    const pairs = allPairs();
+    const pairs = allPairs(live);
     renderSummary(pairs, live);
     renderInsights(live);
     renderMatrix(pairs);
-    renderFieldMap();
-    renderSelected(pairs);
-    renderWeakList(pairs);
+    renderFieldMap(live);
+    renderSelected(pairs, live);
+    renderWeakList(pairs, live);
     renderGraphs(pairs, live);
   }
 

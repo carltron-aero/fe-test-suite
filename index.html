@@ -4,14 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>WRO FE Reliability Test Suite</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=1.1.0">
   </head>
   <body>
     <header class="app-header">
       <div>
         <p class="eyebrow">Unofficial WRO Future Engineers testing suite</p>
         <h1>Reliability Test Suite</h1>
-        <p class="brand-line">Made by Caltron</p>
+        <p class="brand-line">Made by Team Carltron</p>
       </div>
       <div class="header-actions">
         <a class="button ghost" href="analytics.html">Analytics</a>
@@ -46,6 +46,23 @@
         </div>
         </div>
 
+        <div class="rule-controls" aria-label="Competition rules">
+          <label>Rule set
+            <select id="ruleset">
+              <option value="international">International Final 2026</option>
+              <option value="german">German 2026 practice</option>
+            </select>
+          </label>
+          <label>Challenge
+            <select id="raceMode">
+              <option value="obstacle">Obstacle Challenge</option>
+              <option value="free">Open Challenge</option>
+            </select>
+          </label>
+          <label class="rule-toggle"><input id="surpriseRule" type="checkbox"> Surprise rule</label>
+          <button id="drawBtn" class="button" type="button">Draw a round</button>
+          <p class="rule-note"><span id="ruleNote"></span> <a id="ruleSource" target="_blank" rel="noopener">Rules</a></p>
+        </div>
         <div class="setup-grid">
           <div class="field-wrap">
             <div id="field" class="field" aria-label="Field layout"></div>
@@ -86,13 +103,6 @@
             </div>
           </div>
           <form id="settingsForm" class="settings-form">
-            <label>
-              Race mode
-              <select id="raceMode">
-                <option value="obstacle">Obstacle race</option>
-                <option value="free">Free race</option>
-              </select>
-            </label>
             <label>
               Coverage mode
               <select id="coverageMode">
@@ -191,7 +201,8 @@
       <div class="gate-lines left-lines"></div>
     </template>
 
-    <script src="engine.js"></script>
-    <script src="app.js"></script>
+    <script src="international.js?v=1.1.0"></script>
+    <script src="engine.js?v=1.1.0"></script>
+    <script src="app.js?v=1.1.0"></script>
   </body>
 </html>

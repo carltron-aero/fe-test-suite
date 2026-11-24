@@ -1,10 +1,10 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require("./international.js"));
   } else {
-    root.WroPlannerEngine = factory();
+    root.WroPlannerEngine = factory(root.WroInternational);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (International) {
   "use strict";
 
   const COLORS = [
@@ -50,6 +50,8 @@
   const RETEST_RECENCY_WINDOW = 18;
 
   const DEFAULT_SETTINGS = {
+    ruleset: "international",
+    surpriseRule: false,
     raceMode: "obstacle",
     coverageMode: "physical",
     includeCW: true,
@@ -75,6 +77,7 @@
   let freeCandidatesCache = null;
   let candidateSummaryCache = Object.create(null);
   let targetCache = Object.create(null);
+  const internationalPools = new Map();
 
   function indexById(items) {
     return items.reduce((acc, item) => {
@@ -164,12 +167,36 @@
   }
 
   function candidateLayouts(settings) {
-    return normalizeSettings(settings).raceMode === "free" ? freeCandidates() : allCandidates();
+    const normalized = normalizeSettings(settings);
+    if (normalized.ruleset === "german") return normalized.raceMode === "free" ? freeCandidates() : allCandidates();
+    if (normalized.raceMode === "free") {
+      return freeCandidates().flatMap((config) => International.sections.map((startSection) =>
+        ({ ...config, ruleset: "international", startSection })));
+    }
+    const key = [normalized.surpriseRule, normalized.includeCW, normalized.includeCCW].join("|");
+    if (!internationalPools.has(key)) {
+      let seed = 0x7b8f23ef;
+      const random = () => {
+        seed ^= seed << 13;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;
+        return (seed >>> 0) / 4294967296;
+      };
+      const layouts = new Map();
+      for (let index = 0; index < 1024; index += 1) {
+        const { config } = International.drawRound(normalized, random);
+        layouts.set(configKey(config), config);
+      }
+      internationalPools.set(key, [...layouts.values()]);
+    }
+    return internationalPools.get(key);
   }
 
   function candidateSummaryKey(settings) {
     const normalized = normalizeSettings(settings);
     return [
+      normalized.ruleset,
+      normalized.surpriseRule ? "surprise" : "standard",
       normalized.raceMode,
       normalized.coverageMode === "directed" ? "directed" : "physical",
       normalized.includeCW ? "cw" : "no-cw",
@@ -203,13 +230,46 @@
   }
 
   function configKey(config) {
+    if (config.ruleset === "international" && config.raceMode === "obstacle") {
+      const signs = config.signs.map((row) => row.map(stateKey).sort().join("+")).join("/");
+      const surprise = config.surprise;
+      return `INT:${config.startSection}:${signs}${surprise ? `:${surprise.section}${surprise.gate}:${surprise.height}` : ""}`;
+    }
     if (!Array.isArray(config)) {
-      return `FREE:T${config.top}-R${config.right}-B${config.bottom}-L${config.left}`;
+      const prefix = config.ruleset === "international" ? `INTOPEN:${config.startSection}:` : "FREE:";
+      return `${prefix}T${config.top}-R${config.right}-B${config.bottom}-L${config.left}`;
     }
     return config.map(stateKey).join("-");
   }
 
   function parseConfigKey(key) {
+    if (key.startsWith("INT:")) {
+      const [, startSection, positions, changed, height, extra] = key.split(":");
+      const rows = positions?.split("/");
+      if (!sectionById[startSection] || rows?.length !== 4 || extra !== undefined ||
+          !rows.every((row) => /^[RG][IO][123](\+[RG][IO][123])?$/.test(row))) {
+        throw new Error("Invalid international obstacle setup");
+      }
+      const config = { ruleset: "international", raceMode: "obstacle", startSection,
+        signs: rows.map((row) => row.split("+").map(parseStateKey)) };
+      if (config.signs[International.sections.indexOf(startSection)].some((item) => item.band !== "I") ||
+          config.signs.some((row) => row.length === 2 && row[0].gate === row[1].gate)) {
+        throw new Error("Invalid international sign positions");
+      }
+      if (changed !== undefined) {
+        if (!/^[ABCD][123]$/.test(changed) || !["50", "150"].includes(height) ||
+            !config.signs[International.sections.indexOf(changed[0])].some((item) => item.gate === changed[1])) {
+          throw new Error("Invalid modified sign");
+        }
+        config.surprise = { section: changed[0], gate: changed[1], height: Number(height) };
+      }
+      return config;
+    }
+    if (key.startsWith("INTOPEN:")) {
+      const match = key.match(/^INTOPEN:([ABCD]):T(600|1000)-R(600|1000)-B(600|1000)-L(600|1000)$/);
+      if (!match) throw new Error("Invalid international Open setup");
+      return { ...freeConfig(...match.slice(2).map(Number)), ruleset: "international", startSection: match[1] };
+    }
     if (key.startsWith("FREE:")) {
       const match = key.match(/^FREE:T(\d+)-R(\d+)-B(\d+)-L(\d+)$/);
       if (!match) throw new Error(`Invalid free-race config key: ${key}`);
@@ -221,6 +281,11 @@
   function sectionState(config, sectionId) {
     const index = SECTIONS.findIndex((section) => section.id === sectionId);
     return config[index];
+  }
+
+  function sectionSigns(config, sectionId) {
+    const index = International.sections.indexOf(sectionId);
+    return Array.isArray(config) ? [config[index]] : config.signs[index];
   }
 
   function directionOrder(direction) {
@@ -237,6 +302,8 @@
 
   function normalizeSettings(settings) {
     const normalized = Object.assign({}, DEFAULT_SETTINGS, settings || {});
+    if (normalized.ruleset !== "german") normalized.ruleset = "international";
+    normalized.surpriseRule = normalized.surpriseRule === true;
     if (!RACE_MODES.some((mode) => mode.id === normalized.raceMode)) normalized.raceMode = "obstacle";
     normalized.parkingRobotLength = Math.max(100, Math.min(300, Number(normalized.parkingRobotLength) || DEFAULT_SETTINGS.parkingRobotLength));
     return normalized;
@@ -252,10 +319,11 @@
 
   function enabledStartModes(settings) {
     const normalized = normalizeSettings(settings);
+    if (normalized.ruleset === "international" && normalized.raceMode === "free") return ["zone"];
     const modes = [];
     if (normalized.raceMode === "obstacle" && normalized.includeParkingStart) modes.push("parking");
     if (normalized.includeZoneStart) modes.push("zone");
-    if (normalized.includeOppositeZone) modes.push("opposite");
+    if (normalized.ruleset === "german" && normalized.includeOppositeZone) modes.push("opposite");
     if (modes.length === 0) modes.push(normalized.raceMode === "obstacle" ? "parking" : "zone");
     return modes;
   }
@@ -277,15 +345,22 @@
   }
 
   function runVariantKey(variant) {
+    if (variant.zoneNumber) return `${variant.direction}:${variant.startMode}:${variant.zoneNumber}`;
     return `${variant.direction}:${variant.startMode}`;
   }
 
   function parseRunVariantKey(key) {
-    const [direction, startMode] = key.split(":");
-    return { direction, startMode };
+    const [direction, startMode, zoneNumber] = key.split(":");
+    return zoneNumber ? { direction, startMode, zoneNumber: Number(zoneNumber) } : { direction, startMode };
   }
 
   function legalRunVariants(config, settings) {
+    if (config.ruleset === "international") {
+      if (config.raceMode === "free") return enabledDirections(settings).flatMap((direction) =>
+        International.openStartZones(config).map((zoneNumber) => ({ direction, startMode: "zone", zoneNumber })));
+      return enabledDirections(settings).filter((direction) => International.legalSurprise(config, direction))
+        .flatMap((direction) => enabledStartModes(settings).map((startMode) => ({ direction, startMode })));
+    }
     const variants = [];
     for (const direction of enabledDirections(settings)) {
       for (const startMode of enabledStartModes(settings)) {
@@ -299,6 +374,10 @@
   }
 
   function zoneStartBehaviorAtom(config, variant) {
+    if (config.ruleset === "international" && config.raceMode === "obstacle" && variant.startMode === "zone") {
+      const first = International.orderedSigns(config, variant.direction)[0];
+      return `IX:start:${variant.direction} ${first.section === config.startSection ? "start straight" : "next straight"} ${stateKey(first)}`;
+    }
     if (!Array.isArray(config) || !variant || variant.startMode !== "zone") return null;
     const nextSection = variant.direction === "CCW" ? "D" : "B";
     const start = sectionState(config, "A");
@@ -334,7 +413,7 @@
   function minimalRunVariants(config, settings, records) {
     const normalized = normalizeSettings(settings);
     const variants = legalRunVariants(config, normalized);
-    if (!Array.isArray(config) || normalized.raceMode !== "obstacle") return variants;
+    if (normalized.raceMode !== "obstacle") return variants;
     const progress = coverageFromRecords(records || [], normalized);
     const layoutKey = configKey(config);
     return variants.filter((variant) => {
@@ -378,8 +457,41 @@
     ];
   }
 
+  function internationalPairs(config, direction) {
+    const inDirection = (section) => sectionSigns(config, section).slice().sort((a, b) =>
+      (direction === "CW" ? 1 : -1) * (Number(a.gate) - Number(b.gate)));
+    const corners = edgePairs(direction).map(({ from, to }) => [
+      from === config.startSection || to === config.startSection ? "bay corner" : "corner",
+      inDirection(from).at(-1), inDirection(to)[0],
+    ]);
+    for (const section of International.sections) {
+      const signs = inDirection(section);
+      if (signs.length === 2) corners.push([section === config.startSection ? "bay straight" : "straight", ...signs]);
+    }
+    return corners;
+  }
+
+  function directedObstaclePairs(config, direction) {
+    if (config.ruleset === "international") {
+      return internationalPairs(config, direction).map(([, from, to]) => [stateKey(from), stateKey(to)]);
+    }
+    return edgePairs(direction).map(({ from, to }) => [stateKey(sectionState(config, from)), stateKey(sectionState(config, to))]);
+  }
+
   function runVariantCoverage(config, variant, settings) {
     const normalized = normalizeSettings(settings);
+    if (config.ruleset === "international") {
+      if (config.raceMode === "free") return [...freeRunVariantCoverage(config, variant, normalized),
+        `IX:Open start:${config.startSection} zone ${variant.zoneNumber} / ${variant.direction}`];
+      const atoms = internationalPairs(config, variant.direction).map(([type, from, to]) => {
+        const pair = [stateKey(from), stateKey(to)];
+        if (normalized.coverageMode !== "directed") pair.sort();
+        return `IX:${type}:${pair.join(normalized.coverageMode === "directed" ? " > " : " / ")}`;
+      });
+      const modified = International.modifiedSign(config);
+      if (modified) atoms.push(`IX:modified sign:${modified.color} ${modified.height} mm ${variant.direction}`);
+      return unique([...atoms, zoneStartBehaviorAtom(config, variant)].filter(Boolean));
+    }
     if (!Array.isArray(config)) {
       return freeRunVariantCoverage(config, variant, normalized);
     }
@@ -397,6 +509,11 @@
   }
 
   function runVariantFeatureCoverage(config, variant) {
+    if (config.ruleset === "international" && config.raceMode === "obstacle") {
+      return unique(internationalPairs(config, variant.direction).flatMap(([, from, to]) => [
+        `F:color:${from.color}>${to.color}`, `F:band:${from.band}>${to.band}`, `F:gate:${from.gate}>${to.gate}`,
+      ]));
+    }
     if (!Array.isArray(config)) {
       return freeRunVariantFeatureCoverage(config, variant);
     }
@@ -409,6 +526,7 @@
 
   function targetAtoms(settings) {
     const normalized = normalizeSettings(settings);
+    if (normalized.ruleset === "international") return internationalTargets(normalized).targets;
     if (normalized.raceMode === "free") return freeTargetAtoms(normalized);
     const key = [
       normalized.raceMode,
@@ -470,6 +588,24 @@
       for (const to of GATES) targets.push(`F:gate:${from.id}>${to.id}`);
     }
     return new Set(targets);
+  }
+
+  const internationalTargetCache = new Map();
+
+  function internationalTargets(settings) {
+    const key = candidateSummaryKey(settings);
+    if (!internationalTargetCache.has(key)) {
+      const targets = new Set();
+      const features = new Set();
+      for (const { variants } of candidateSummaries(settings)) {
+        for (const item of variants) {
+          item.atoms.forEach((atom) => targets.add(atom));
+          item.features.forEach((feature) => features.add(feature));
+        }
+      }
+      internationalTargetCache.set(key, { targets, features });
+    }
+    return internationalTargetCache.get(key);
   }
 
   function freeSides(config) {
@@ -589,7 +725,28 @@
   }
 
   function recordRaceMode(record) {
-    return record.raceMode || (record.layoutKey && record.layoutKey.startsWith("FREE:") ? "free" : "obstacle");
+    return record.raceMode || (/^(FREE|INTOPEN):/.test(record.layoutKey) ? "free" : "obstacle");
+  }
+
+  function recordMatchesSettings(record, settings) {
+    if (!record.layoutKey || !record.variantKey || recordRaceMode(record) !== settings.raceMode) return false;
+    return layoutMatchesSettings(record.layoutKey, settings);
+  }
+
+  function layoutMatchesSettings(key, settings) {
+    try {
+      const config = parseConfigKey(key);
+      const international = config.ruleset === "international";
+      if (international !== (settings.ruleset === "international")) return false;
+      if (international) {
+        return config.raceMode === settings.raceMode && (config.raceMode === "free" || Boolean(config.surprise) === settings.surpriseRule);
+      }
+      if (settings.raceMode === "obstacle") return Array.isArray(config) && config.length === 4 &&
+        config.every((item) => /^[RG][IO][123]$/.test(stateKey(item)));
+      return config.raceMode === "free" && [config.top, config.right, config.bottom, config.left].every((width) => FREE_OFFSETS.includes(width));
+    } catch (error) {
+      return false;
+    }
   }
 
   function isAttemptRecord(record) {
@@ -604,7 +761,7 @@
     const attemptedVariantKeys = new Set();
     const attemptedLayouts = new Set();
     for (const record of records || []) {
-      if (recordRaceMode(record) !== normalized.raceMode) continue;
+      if (!recordMatchesSettings(record, normalized)) continue;
       attemptedVariantKeys.add(`${record.layoutKey}|${record.variantKey}`);
       if (isAttemptRecord(record)) {
         attemptedLayouts.add(record.layoutKey);
@@ -621,7 +778,8 @@
       }
     }
     const targets = targetAtoms(normalized);
-    const featureTargetSet = normalized.raceMode === "free" ? freeFeatureTargets(normalized) : obstacleFeatureTargets();
+    const featureTargetSet = normalized.ruleset === "international" ? internationalTargets(normalized).features
+      : normalized.raceMode === "free" ? freeFeatureTargets(normalized) : obstacleFeatureTargets();
     return {
       covered,
       failed,
@@ -649,7 +807,7 @@
 
     const attemptsByKey = new Map(exactKeys.map((key) => [key, 0]));
     for (const record of records || []) {
-      if (recordRaceMode(record) !== normalized.raceMode || !isAttemptRecord(record)) continue;
+      if (!recordMatchesSettings(record, normalized) || !isAttemptRecord(record)) continue;
       const key = `${record.layoutKey}|${record.variantKey}`;
       if (!attemptsByKey.has(key)) continue;
       attemptsByKey.set(key, attemptsByKey.get(key) + 1);
@@ -694,7 +852,7 @@
     const variantStats = new Map();
     const atomStats = new Map();
     (records || []).forEach((record, index) => {
-      if (recordRaceMode(record) !== normalized.raceMode || !record.layoutKey || !record.variantKey) return;
+      if (!recordMatchesSettings(record, normalized)) return;
       const variantKey = `${record.layoutKey}|${record.variantKey}`;
       const variant = variantStats.get(variantKey) || { attempts: 0, passes: 0, issues: 0, skips: 0, lastIndex: -1 };
       variant.lastIndex = index;
@@ -755,7 +913,7 @@
     const recent = new Set();
     for (let i = (records || []).length - 1; i >= 0 && recent.size < limit; i -= 1) {
       const record = records[i];
-      if (recordRaceMode(record) !== normalized.raceMode || !record.layoutKey || !record.variantKey) continue;
+      if (!recordMatchesSettings(record, normalized)) continue;
       recent.add(`${record.layoutKey}|${record.variantKey}`);
     }
     return recent;
@@ -797,6 +955,10 @@
 
   function hammingConfig(a, b) {
     if (!a || !b) return 4;
+    if (a.ruleset === "international" || b.ruleset === "international") {
+      if (a.ruleset !== b.ruleset || a.raceMode !== b.raceMode) return 4;
+      return describeChanges(configKey(a), configKey(b)).length;
+    }
     if (!Array.isArray(a) || !Array.isArray(b)) {
       if (Array.isArray(a) || Array.isArray(b)) return 4;
       return ["top", "right", "bottom", "left"].reduce((changes, key) => changes + (a[key] !== b[key] ? 1 : 0), 0);
@@ -817,6 +979,23 @@
     if (!previousKey || !nextKey) return [];
     const previous = parseConfigKey(previousKey);
     const next = parseConfigKey(nextKey);
+    if (previous.ruleset === "international" && next.ruleset === "international" && previous.raceMode === next.raceMode) {
+      const changes = [];
+      const add = (id, from, to) => {
+        if (from !== to) changes.push({ section: { id }, from: { label: from }, to: { label: to } });
+      };
+      for (const id of International.sections) {
+        if (next.raceMode === "free") add(id, `${freeSideValue(previous, id)} mm`, `${freeSideValue(next, id)} mm`);
+        else add(id, sectionSigns(previous, id).map(stateKey).sort().join(" + "), sectionSigns(next, id).map(stateKey).sort().join(" + "));
+      }
+      add(next.raceMode === "free" ? "Start" : "Parking", previous.startSection, next.startSection);
+      const modified = (config) => {
+        const item = International.modifiedSign(config);
+        return item ? `${item.section}${item.gate} ${item.visibleColor} ${item.height} mm` : "None";
+      };
+      if (next.raceMode === "obstacle") add("Modified sign", modified(previous), modified(next));
+      return changes;
+    }
     if (!Array.isArray(previous) || !Array.isArray(next)) {
       if (Array.isArray(previous) || Array.isArray(next)) {
         return [{ section: { id: "Mode" }, from: { label: previousKey }, to: { label: nextKey } }];
@@ -1028,6 +1207,7 @@
   }
 
   function atomLabel(atom) {
+    if (atom.startsWith("IX:")) return atom.slice(3).replace(":", " · ");
     if (atom.startsWith("FR:")) {
       const [, type, target, rest] = atom.split(":");
       if (type === "side") return `${target} width ${rest} mm`;
@@ -1086,8 +1266,12 @@
     candidateLayouts,
     configKey,
     parseConfigKey,
+    sectionSigns,
+    recordMatchesSettings,
+    layoutMatchesSettings,
     directionOrder,
     edgePairs,
+    directedObstaclePairs,
     normalizeSettings,
     enabledDirections,
     enabledStartModes,
